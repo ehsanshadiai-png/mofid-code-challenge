@@ -22,7 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
  * {@link Propagation#NEVER} enforces that rule: calling this service inside a caller's transaction fails
  * fast with {@code IllegalTransactionStateException}. With the default REQUIRED, the operation would
  * silently join the caller's transaction instead: row locks would be held until the caller commits, and
- * after a primary key failure the replay would run inside the same rollback-only transaction.
+ * after a primary key failure the lookup of the winner's outcome would run inside the same rollback-only transaction.
  */
 @Slf4j
 @Service
@@ -77,9 +77,9 @@ public class DefaultBalanceService implements BalanceService {
             operations.execute(request);
         } catch (DataIntegrityViolationException e) {
             // Lost the race on the transactionId primary key to a concurrent transaction.
-            // Our transaction has rolled back; replay whatever the winner committed.
-            log.debug("Integrity violation for transaction {}, attempting replay", request.transactionId(), e);
-            if (!operations.replayCommitted(request)) {
+            // Our transaction has rolled back; return the outcome the winner committed.
+            log.debug("Integrity violation for transaction {}, reading committed outcome", request.transactionId(), e);
+            if (!operations.returnCommittedOutcome(request)) {
                 throw e;
             }
         }

@@ -33,7 +33,8 @@ import java.util.stream.Stream;
  *   <li>Lock every involved account row with {@code SELECT ... FOR UPDATE}, in ascending id order.</li>
  *   <li>Look up the transactionId. Duplicates of the same request touch the same accounts, so they
  *       queue on step 1; once one commits, the next one's statement sees the committed row
- *       (READ COMMITTED takes a new snapshot per statement) and replays the stored outcome.</li>
+ *       (READ COMMITTED takes a new snapshot per statement) and returns the stored outcome
+ *       without applying anything again.</li>
  *   <li>Apply the balance change, or record a REJECTED outcome if funds are insufficient.</li>
  *   <li>INSERT the transaction row (primary key = transactionId) and the ledger entries.</li>
  * </ol>
@@ -56,7 +57,7 @@ public class TransactionalBalanceOperations {
 
         Optional<BalanceTransaction> existing = transactionRepository.findById(request.transactionId());
         if (existing.isPresent()) {
-            replay(existing.get(), request);
+            returnStoredOutcome(existing.get(), request);
             return;
         }
 
@@ -70,15 +71,15 @@ public class TransactionalBalanceOperations {
     }
 
     /**
-     * Replays a transaction that another request has already committed. Used after this request lost
-     * the race on the transactionId primary key.
+     * Returns the outcome of a transaction that another request has already committed. Used after this
+     * request lost the race on the transactionId primary key.
      *
      * @return false if no committed transaction with that id is visible
      */
     @Transactional(isolation = Isolation.READ_COMMITTED, readOnly = true)
-    public boolean replayCommitted(OperationRequest request) {
+    public boolean returnCommittedOutcome(OperationRequest request) {
         Optional<BalanceTransaction> existing = transactionRepository.findById(request.transactionId());
-        existing.ifPresent(transaction -> replay(transaction, request));
+        existing.ifPresent(transaction -> returnStoredOutcome(transaction, request));
         return existing.isPresent();
     }
 
@@ -145,12 +146,12 @@ public class TransactionalBalanceOperations {
         return locked;
     }
 
-    private static void replay(BalanceTransaction existing, OperationRequest request) {
+    private static void returnStoredOutcome(BalanceTransaction existing, OperationRequest request) {
         if (!existing.matches(request)) {
             throw new TransactionIdConflictException(request.transactionId());
         }
         if (existing.getStatus() == TransactionStatus.REJECTED) {
-            throw InsufficientFundsException.replayed(
+            throw InsufficientFundsException.previouslyRejected(
                     existing.getId(), existing.getSourceAccountId(), existing.getAmount());
         }
         // COMPLETED: the effect is already applied; returning normally is the idempotent response.

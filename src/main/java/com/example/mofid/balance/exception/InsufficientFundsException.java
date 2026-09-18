@@ -22,7 +22,7 @@ public class InsufficientFundsException extends BalanceException {
     }
 
     /** Raised when a retry hits a transaction that was already rejected for insufficient funds. */
-    public static InsufficientFundsException replayed(String transactionId, String accountId, long requestedAmount) {
+    public static InsufficientFundsException previouslyRejected(String transactionId, String accountId, long requestedAmount) {
         return new InsufficientFundsException(accountId, requestedAmount,
                 "Transaction '%s' was previously rejected: account '%s' had insufficient funds for %d"
                         .formatted(transactionId, accountId, requestedAmount));

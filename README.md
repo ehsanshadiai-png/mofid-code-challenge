@@ -23,8 +23,8 @@ Requires a JDK 21 or newer. Nothing else: the database is embedded.
 | Independent accounts | Row-level locks: operations on A and B never wait on each other |
 | Transfer atomicity | Both balance updates, the transaction record and the ledger entries commit or roll back together |
 | Deadlocks | Locks are always acquired in **ascending account-id order** |
-| Idempotency | `transactionId` is the **primary key** of `balance_transaction`; outcome (COMPLETED / REJECTED) is stored and replayed |
-| Concurrent duplicates | Same request → serialized by the account lock, later copies see the committed row and replay. Different request with same id → primary key lets one win |
+| Idempotency | `transactionId` is the **primary key** of `balance_transaction`; outcome (COMPLETED / REJECTED) is stored and returned to every retry |
+| Concurrent duplicates | Same request → serialized by the account lock, later copies see the committed row and return its outcome. Different request with same id → primary key lets one win |
 | Negative balance | Checked in code under the lock, **and** a `CHECK (balance >= 0)` constraint in the schema |
 
 ---
@@ -38,11 +38,11 @@ Service interface        BalanceService  (the interface required by the challeng
                                  │
 Facade (no transaction)  DefaultBalanceService
                            · validates input (amount > 0, ids, same-account transfer)
-                           · runs the unit of work; on a primary-key race, replays the winner
+                           · runs the unit of work; on a primary-key race, returns the winner's outcome
                                  │
 Unit of work             TransactionalBalanceOperations   @Transactional(READ_COMMITTED)
                            1. lock account rows (FOR UPDATE, sorted by id)
-                           2. look up transactionId → replay if it exists
+                           2. look up transactionId → return stored outcome if it exists
                            3. apply balance change, or record REJECTED
                            4. INSERT balance_transaction (PK = transactionId) + ledger_entry rows
                                  │
@@ -82,7 +82,7 @@ bypasses the proxy).
 
 | Where | Propagation | Why |
 |---|---|---|
-| `DefaultBalanceService` (class) | `NEVER` | The service owns its transaction boundaries. With the default `REQUIRED`, a call from inside a caller's transaction would **silently join it**: row locks held until the caller commits, lock ordering no longer guaranteed, and after a primary-key failure the replay would run in the same rollback-only transaction. `NEVER` turns that misuse into an immediate `IllegalTransactionStateException`. |
+| `DefaultBalanceService` (class) | `NEVER` | The service owns its transaction boundaries. With the default `REQUIRED`, a call from inside a caller's transaction would **silently join it**: row locks held until the caller commits, lock ordering no longer guaranteed, and after a primary-key failure the lookup of the winner's outcome would run in the same rollback-only transaction. `NEVER` turns that misuse into an immediate `IllegalTransactionStateException`. |
 | `TransactionalBalanceOperations` | `REQUIRED` (default) | Called only from the non-transactional facade, so each call starts a **new** transaction; the repositories join it. |
 | `AccountRepository.findByIdForUpdate` | `MANDATORY` | A row lock is only meaningful inside a transaction. Hibernate already rejects it outside one (`No active transaction`); `MANDATORY` states the rule in the code and fails before any SQL is sent. |
 
@@ -151,7 +151,7 @@ The isolation level only matters for anomalies the locks don't already prevent. 
 
 The other thing READ COMMITTED gives us *positively*: each statement takes a fresh snapshot. A duplicate
 request that waited for the account lock sees the `balance_transaction` row committed by the request it
-waited for, and replays it instead of hitting the primary key. (Under REPEATABLE READ that row would be
+waited for, and returns its outcome instead of hitting the primary key. (Under REPEATABLE READ that row would be
 invisible — the design is still correct, it just takes the slower primary-key-violation path.)
 
 ---
@@ -165,7 +165,7 @@ transaction** as the balance change. Either both commit or neither does, and the
 hold two rows with the same id. So a transaction's effect is applied **at most once**, guaranteed by
 the database, not by application code.
 
-Stored outcome and replay semantics:
+Stored outcome, returned to every retry (the operation itself is never re-executed):
 
 | Existing record | New request with same `transactionId` | Result |
 |---|---|---|
@@ -191,7 +191,7 @@ Decisions worth defending:
 
 **Case 1 — genuine duplicates (same operation, so same accounts).** All copies try to lock the same account
 row(s). One wins, executes, inserts the record and commits. The others wait on the lock; when each gets
-it, its lookup (fresh READ COMMITTED snapshot) finds the committed record and replays the outcome. Every
+it, its lookup (fresh READ COMMITTED snapshot) finds the committed record and returns its outcome. Every
 copy returns the same result; the balance changes once. Tested for credit, debit, transfer and a rejected
 debit with 32 simultaneous copies (`ConcurrencyTest.concurrentDuplicate*`).
 
@@ -359,8 +359,8 @@ couldn't get a synchronous answer), **Docker** (nothing external to run).
   would be a small addition.
 - **The balance returned by the REST credit/debit endpoints** is read after commit, so under concurrency
   it may already include later operations.
-- **Replay does not return the original response body**, only success / the same error. Storing the
-  response would allow exact response replay.
+- **A retry does not get the original response body**, only success / the same error. Storing the
+  response would allow returning it exactly.
 - **No authentication, currencies or opening-balance ledger entry** (the opening balance is treated as
   the ledger's starting point).
 
