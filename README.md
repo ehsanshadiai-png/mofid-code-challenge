@@ -491,5 +491,6 @@ required tests, plus a REST API and an audit ledger.
 3. Bounded retry with jitter for lock timeouts; metrics for lock wait time and rejection rates
    (Micrometer).
 4. Retention job for idempotency records.
-5. A load test (Gatling/JMH) to measure throughput per hot account vs. spread across accounts, and try
-   the conditional-UPDATE variant against it.
+5. A load test (e.g. Locust) against PostgreSQL comparing throughput for spread load vs. a single hot
+   account, and measuring whether the conditional-UPDATE variant raises the hot-account ceiling.
+   (Numbers from in-memory H2 in the same JVM would not be representative.)
