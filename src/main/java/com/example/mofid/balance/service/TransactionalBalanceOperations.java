@@ -115,7 +115,8 @@ public class TransactionalBalanceOperations {
     }
 
     private void complete(OperationRequest request, LedgerEntry... entries) {
-        // saveAndFlush: surface a primary key violation here, inside the method, rather than at commit.
+        // saveAndFlush: a duplicate transactionId fails here, at the INSERT, rather than later at commit.
+        // Not needed for correctness (the primary key rejects it either way), but the failure point is explicit.
         transactionRepository.saveAndFlush(new BalanceTransaction(request, TransactionStatus.COMPLETED));
         ledgerEntryRepository.saveAll(List.of(entries));
     }
